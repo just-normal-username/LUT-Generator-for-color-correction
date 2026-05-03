@@ -1,7 +1,8 @@
-use crate::hald_generator::generate_HALD;
+use crate::hald_generator::HaldImageRgbMap;
 
 mod hald_generator;
 
 fn main() {
-    generate_HALD();
+    let map=HaldImageRgbMap::new(8);
+    map.generate_HALD();
 }
