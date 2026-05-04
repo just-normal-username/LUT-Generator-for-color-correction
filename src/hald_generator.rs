@@ -152,6 +152,79 @@ impl HaldImageRgbMap {
         println!("HALD generata: i crocini ora toccano i 4 angoli della LUT.");
     }
 
+    /// Apre l'immagine al percorso `path`, disegna una griglia nera che separa i
+    /// tasselli della HALD (layout a "squares") e salva una copia con suffisso
+    /// "_grid.png" nello stesso percorso.
+    ///
+    /// La funzione assume che la LUT occupi un'area quadrata di lato `level^3` e
+    /// che i tasselli abbiano dimensione `level^2` (come in generate_hald_map_squares).
+    pub fn save_with_grid(&self, path: String) -> Result<String, String> {
+        use std::path::Path;
+
+        let img = image::open(&path).map_err(|e| format!("Impossibile aprire immagine: {}", e))?;
+        let (width, height) = img.dimensions();
+        if width != height {
+            return Err(format!("Image must be square"));
+        }
+
+        let cell_count = self.level.pow(3); // numero di celle nella HALD (es. 512)
+        if cell_count == 0 {
+            return Err(format!("Invalid level (cell_count == 0)"));
+        }
+
+        // pixel_per_cell: quanti pixel dell'immagine corrispondono ad una cella della HALD
+        let pixel_per_cell = width / cell_count;
+        let tile_size=width/self.level;
+        if pixel_per_cell == 0 {
+            return Err(format!("Image too small for this hald level: pixel_per_cell == 0"));
+        }
+
+        // Totale pixel occupati dalla LUT (potrebbe essere leggermente più piccolo di width
+        // a causa di divisioni intere). Centriamo quest'area nell'immagine.
+        let total_lut_pixels = pixel_per_cell * cell_count;
+        let offset = 0;
+        println!("offset: {}, tile size: {}", offset, tile_size);
+        let lut_min = offset;
+        let lut_max = offset + total_lut_pixels; // exclusive
+
+        let mut rgb_img = img.to_rgb8();
+        let black = Rgb([0u8, 0u8, 0u8]);
+        let line_width: u32 = 1; // larghezza in pixel della griglia
+
+        // Disegniamo linee verticali e orizzontali tra i tasselli
+        for i in 1..self.level {
+            let x = lut_min + i * tile_size;
+            // vertical line
+            for dx in 0..line_width {
+                let xx = x.saturating_add(dx);
+                if xx >= width { continue; }
+                for y in lut_min..lut_max {
+                    rgb_img.put_pixel(xx, y, black);
+                }
+            }
+
+            let y = lut_min + i * tile_size;
+            // horizontal line
+            for dy in 0..line_width {
+                let yy = y.saturating_add(dy);
+                if yy >= height { continue; }
+                for x2 in lut_min..lut_max {
+                    rgb_img.put_pixel(x2, yy, black);
+                }
+            }
+        }
+
+        // Costruiamo il percorso di output aggiungendo _grid prima dell'estensione
+        let p = Path::new(&path);
+        let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "out".to_string());
+        let parent = p.parent().unwrap_or_else(|| Path::new("."));
+        let out_file = parent.join(format!("{}_grid.png", stem));
+        let out_path_str = out_file.to_string_lossy().into_owned();
+
+        rgb_img.save(&out_file).map_err(|e| format!("Errore nel salvataggio: {}", e))?;
+        Ok(out_path_str)
+    }
+
     pub fn hald_from_image(& mut self, path: String)->Result<(), String>{
         let img = image::open(path).expect("Impossibile aprire l'immagine");
         let (width, height) = img.dimensions();
@@ -218,7 +291,7 @@ impl HaldImageRgbMap {
         // Soglia in spazio lineare (assoluta per canale). Se il pixel misurato
         // differisce dalla HALD standard più di questa soglia in uno qualsiasi
         // dei canali, non lo inseriamo nella mappa di output.
-        const REVERSE_THRESHOLD: f32 = 0.17;
+        const REVERSE_THRESHOLD: f32 = 0.2;
 
         let mut inserted = 0usize;
         let mut skipped = 0usize;
@@ -248,6 +321,20 @@ impl HaldImageRgbMap {
 
                 // Altrimenti, mappiamo il pixel nella posizione ricostruita
                 let (x2, y2) = xy_from_rgb_squares(px, self.level);
+
+                // Controllo round-trip: il pixel misurato deve essere vicino al colore
+                // canonico della destinazione (rgb_from_xy_squares(x2,y2)). Se non lo è,
+                // saltiamo l'inserimento.
+                let canonical_dest_rgb = rgb_from_xy_squares(x2, y2, self.level);
+                let canonical_dest_lin = from_rgb_to_srgb(&canonical_dest_rgb).into_linear();
+                let dr_can = (px_lin.red - canonical_dest_lin.red).abs();
+                let dg_can = (px_lin.green - canonical_dest_lin.green).abs();
+                let db_can = (px_lin.blue - canonical_dest_lin.blue).abs();
+                if dr_can > REVERSE_THRESHOLD || dg_can > REVERSE_THRESHOLD || db_can > REVERSE_THRESHOLD {
+                    skipped += 1;
+                    continue;
+                }
+
                 let rgb = rgb_from_xy_squares(x, y, self.level);
 
                 // Controllo aggiuntivo: confrontiamo il valore che stiamo per inserire
