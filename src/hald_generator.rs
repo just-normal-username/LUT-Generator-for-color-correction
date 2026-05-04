@@ -207,22 +207,75 @@ impl HaldImageRgbMap {
         map
     }
     pub fn reverse_map_squares(self)->Self{
-        let mut map=HaldImageRgbMap::new(self.level);
+        // Creiamo la mappa di output (pre-popolata con la HALD standard a quadrati)
+        let mut map = HaldImageRgbMap::new(self.level);
         map.generate_hald_map_squares();
-        let mut px;
-        let mut x2;
-        let mut y2;
-        let mut rgb;
-        for x in 0..self.level.pow(3){
-            for y in 0..self.level.pow(3){
-                px=self.map[x as usize][y as usize].clone();
-                (x2, y2)=xy_from_rgb_squares(px, self.level);
-                rgb=rgb_from_xy_squares(x,y, self.level);
-                map.map[x2 as usize][y2 as usize].r=rgb.0[0];
-                map.map[x2 as usize][y2 as usize].g=rgb.0[1];
-                map.map[x2 as usize][y2 as usize].b=rgb.0[2];
+
+        // Mappa baseline per confronto: la HALD standard nello stesso layout
+        let mut baseline = HaldImageRgbMap::new(self.level);
+        baseline.generate_hald_map_squares();
+
+        // Soglia in spazio lineare (assoluta per canale). Se il pixel misurato
+        // differisce dalla HALD standard più di questa soglia in uno qualsiasi
+        // dei canali, non lo inseriamo nella mappa di output.
+        const REVERSE_THRESHOLD: f32 = 0.17;
+
+        let mut inserted = 0usize;
+        let mut skipped = 0usize;
+
+        for x in 0..self.level.pow(3) {
+            for y in 0..self.level.pow(3) {
+                let px = self.map[x as usize][y as usize].clone();
+
+                // Valore atteso nella HALD standard per la stessa posizione (x,y)
+                let expected_px = baseline.map[x as usize][y as usize].clone();
+
+                // Confronto nello spazio lineare
+                let px_rgb: Rgb<u8> = px.clone().into();
+                let exp_rgb: Rgb<u8> = expected_px.into();
+                let px_lin = from_rgb_to_srgb(&px_rgb).into_linear();
+                let exp_lin = from_rgb_to_srgb(&exp_rgb).into_linear();
+
+                let dr = (px_lin.red - exp_lin.red).abs();
+                let dg = (px_lin.green - exp_lin.green).abs();
+                let db = (px_lin.blue - exp_lin.blue).abs();
+
+                if dr > REVERSE_THRESHOLD || dg > REVERSE_THRESHOLD || db > REVERSE_THRESHOLD {
+                    // Troppo diverso dalla HALD standard: non inseriamo
+                    skipped += 1;
+                    continue;
+                }
+
+                // Altrimenti, mappiamo il pixel nella posizione ricostruita
+                let (x2, y2) = xy_from_rgb_squares(px, self.level);
+                let rgb = rgb_from_xy_squares(x, y, self.level);
+
+                // Controllo aggiuntivo: confrontiamo il valore che stiamo per inserire
+                // con il valore atteso nella HALD standard nella posizione di destinazione
+                // (x2, y2). Se sono troppo diversi, non sovrascriviamo.
+                let dest_expected_px = baseline.map[x2 as usize][y2 as usize].clone();
+                let dest_expected_rgb: Rgb<u8> = dest_expected_px.into();
+                let dest_expected_lin = from_rgb_to_srgb(&dest_expected_rgb).into_linear();
+                let rgb_lin = from_rgb_to_srgb(&rgb).into_linear();
+
+                let ddr2 = (rgb_lin.red - dest_expected_lin.red).abs();
+                let ddg2 = (rgb_lin.green - dest_expected_lin.green).abs();
+                let ddb2 = (rgb_lin.blue - dest_expected_lin.blue).abs();
+
+                if ddr2 > REVERSE_THRESHOLD || ddg2 > REVERSE_THRESHOLD || ddb2 > REVERSE_THRESHOLD {
+                    // Il valore da inserire è troppo diverso da quello atteso in destinazione
+                    skipped += 1;
+                    continue;
+                }
+
+                map.map[x2 as usize][y2 as usize].r = rgb.0[0];
+                map.map[x2 as usize][y2 as usize].g = rgb.0[1];
+                map.map[x2 as usize][y2 as usize].b = rgb.0[2];
+                inserted += 1;
             }
         }
+
+        println!("reverse_map_squares: inserted {} entries, skipped {} entries", inserted, skipped);
         map
     }
 }
@@ -319,4 +372,3 @@ fn rgb_from_xy_squares(x:u32,y:u32, level:u32)->Rgb<u8>{
         (b_idx as f32 * scale).round() as u8,
     ])
 }
-
