@@ -206,6 +206,25 @@ impl HaldImageRgbMap {
         }
         map
     }
+    pub fn reverse_map_squares(self)->Self{
+        let mut map=HaldImageRgbMap::new(self.level);
+        map.generate_hald_map_squares();
+        let mut px;
+        let mut x2;
+        let mut y2;
+        let mut rgb;
+        for x in 0..self.level.pow(3){
+            for y in 0..self.level.pow(3){
+                px=self.map[x as usize][y as usize].clone();
+                (x2, y2)=xy_from_rgb_squares(px, self.level);
+                rgb=rgb_from_xy_squares(x,y, self.level);
+                map.map[x2 as usize][y2 as usize].r=rgb.0[0];
+                map.map[x2 as usize][y2 as usize].g=rgb.0[1];
+                map.map[x2 as usize][y2 as usize].b=rgb.0[2];
+            }
+        }
+        map
+    }
 }
 
 fn xy_from_rgb(px: Pixel, level: u32) -> (u32, u32) {
@@ -248,6 +267,50 @@ fn rgb_from_xy(x:u32,y:u32, level:u32)->Rgb<u8>{
     let tile_x = x / n;
     let g_rem = y % level;
     let g_idx = tile_x * level + g_rem;
+
+    // 4. Convertiamo gli indici (0..n-1) in valori RGB (0..255)
+    Rgb([
+        (r_idx as f32 * scale).round() as u8,
+        (g_idx as f32 * scale).round() as u8,
+        (b_idx as f32 * scale).round() as u8,
+    ])
+}
+
+fn xy_from_rgb_squares(px: Pixel, level: u32) -> (u32, u32) {
+    let n = level * level;              // Sfumature per canale: 64
+    let size = level * n;               // Dimensione totale: 512
+
+    let scale = (n - 1) as f32 / 255.0;
+
+    // 1. Normalizzazione: trasformiamo i valori da 0..255 a 0..(n-1)
+    // Es: se px.r è 255, r diventa 63.
+    let r = (px.r as f32 * scale).round() as u32;
+    let g = (px.g as f32 * scale).round() as u32;
+    let b = (px.b as f32 * scale).round() as u32;
+
+    // Il Blu determina la posizione del tassello nella griglia 8x8
+    let tile_x = b % level;
+    let tile_y = b / level;
+    // Coordinata X: (Posizione tassello * 64) + offset Rosso
+    let x = tile_x * n + r;
+    // Coordinata Y: (Posizione tassello * 64) + offset Verde
+    let y = tile_y * n + g;
+    (x, y)
+}
+fn rgb_from_xy_squares(x:u32,y:u32, level:u32)->Rgb<u8>{
+    let n = level.pow(2); // Numero di sfumature per canale (es. 64)
+    let scale = 255.0 / (n - 1) as f32;
+
+    let r_idx = x % n;
+
+    let g_idx = y % n;
+
+    // 3. Ricaviamo G combinando informazioni da X e Y
+    // tile_x = g / level  => lo prendiamo da x / n
+    // g_rem = g % level   => lo prendiamo da y % level
+    let tile_y = y / n;
+    let b_rem = x / n;
+    let b_idx = tile_y * level + b_rem;
 
     // 4. Convertiamo gli indici (0..n-1) in valori RGB (0..255)
     Rgb([
