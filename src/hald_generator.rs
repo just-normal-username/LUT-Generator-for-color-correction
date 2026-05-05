@@ -1,6 +1,7 @@
 use std::ops::Add;
 use image::{GenericImageView, ImageBuffer, Rgb, RgbImage};
 use palette::{Srgb, LinSrgb};
+use palette::encoding::{Linear};
 
 #[derive(Clone)]
 #[derive(Debug)]
@@ -235,7 +236,7 @@ impl HaldImageRgbMap {
         let rgb_img = img.to_rgb8();
         let size=self.level.pow(3);
         let pixel_size= width/size;
-        let sample_size=pixel_size/2;
+        let sample_size=(pixel_size as f32*0.95).round() as u32;
         let mut start_x=0;
         let mut start_y=0;
         for x in 0..size{
@@ -281,7 +282,9 @@ impl HaldImageRgbMap {
     }
     pub fn reverse_map_squares(self)->Self{
         // Creiamo la mappa di output (pre-popolata con la HALD standard a quadrati)
+        let size=self.level.pow(3);
         let mut map = HaldImageRgbMap::new(self.level);
+        let mut linear_map:Vec<Vec<(LinSrgb, u32)>>=vec![vec![(Srgb::new(0,0,0).into_linear(), 0);size as usize]; size as usize];
         map.generate_hald_map_squares();
 
         // Mappa baseline per confronto: la HALD standard nello stesso layout
@@ -291,8 +294,11 @@ impl HaldImageRgbMap {
         // Soglia in spazio lineare (assoluta per canale). Se il pixel misurato
         // differisce dalla HALD standard più di questa soglia in uno qualsiasi
         // dei canali, non lo inseriamo nella mappa di output.
-        const REVERSE_THRESHOLD: f32 = 0.2;
-
+        const REVERSE_THRESHOLD: f32 = 1.0;
+        // Soglie addizionali nello spazio sRGB (componenti 0..1) - controllo per canale
+        const SRGB_THRESH_R: f32 = 0.27;
+        const SRGB_THRESH_G: f32 = 0.27;
+        const SRGB_THRESH_B: f32 = 0.27;
         let mut inserted = 0usize;
         let mut skipped = 0usize;
 
@@ -319,6 +325,17 @@ impl HaldImageRgbMap {
                     continue;
                 }
 
+                // Controllo addizionale nello spazio sRGB (assoluto per canale)
+                let px_srgb = from_rgb_to_srgb(&px_rgb);
+                let exp_srgb = from_rgb_to_srgb(&exp_rgb);
+                let sdr = (px_srgb.red - exp_srgb.red).abs();
+                let sdg = (px_srgb.green - exp_srgb.green).abs();
+                let sdb = (px_srgb.blue - exp_srgb.blue).abs();
+                if sdr > SRGB_THRESH_R || sdg > SRGB_THRESH_G || sdb > SRGB_THRESH_B {
+                    skipped += 1;
+                    continue;
+                }
+
                 // Altrimenti, mappiamo il pixel nella posizione ricostruita
                 let (x2, y2) = xy_from_rgb_squares(px, self.level);
 
@@ -331,6 +348,15 @@ impl HaldImageRgbMap {
                 let dg_can = (px_lin.green - canonical_dest_lin.green).abs();
                 let db_can = (px_lin.blue - canonical_dest_lin.blue).abs();
                 if dr_can > REVERSE_THRESHOLD || dg_can > REVERSE_THRESHOLD || db_can > REVERSE_THRESHOLD {
+                    skipped += 1;
+                    continue;
+                }
+
+                // ulteriore controllo sRGB per il confronto round-trip
+                let canonical_srgb = from_rgb_to_srgb(&canonical_dest_rgb);
+                if (px_srgb.red - canonical_srgb.red).abs() > SRGB_THRESH_R ||
+                   (px_srgb.green - canonical_srgb.green).abs() > SRGB_THRESH_G ||
+                   (px_srgb.blue - canonical_srgb.blue).abs() > SRGB_THRESH_B {
                     skipped += 1;
                     continue;
                 }
@@ -355,9 +381,26 @@ impl HaldImageRgbMap {
                     continue;
                 }
 
-                map.map[x2 as usize][y2 as usize].r = rgb.0[0];
-                map.map[x2 as usize][y2 as usize].g = rgb.0[1];
-                map.map[x2 as usize][y2 as usize].b = rgb.0[2];
+                // Controllo addizionale nello spazio sRGB per il valore che stiamo per inserire
+                let rgb_srgb = from_rgb_to_srgb(&rgb);
+                let dest_expected_srgb = from_rgb_to_srgb(&dest_expected_rgb);
+                let sdr_ins = (rgb_srgb.red - dest_expected_srgb.red).abs();
+                let sdg_ins = (rgb_srgb.green - dest_expected_srgb.green).abs();
+                let sdb_ins = (rgb_srgb.blue - dest_expected_srgb.blue).abs();
+                if sdr_ins > SRGB_THRESH_R || sdg_ins > SRGB_THRESH_G || sdb_ins > SRGB_THRESH_B {
+                    skipped += 1;
+                    continue;
+                }
+                let mut count=linear_map[x2 as usize][y2 as usize].1;
+                count+=1;
+                linear_map[x2 as usize][y2 as usize].0.red=linear_map[x2 as usize][y2 as usize].0.red+rgb_lin.red;
+                linear_map[x2 as usize][y2 as usize].0.green=linear_map[x2 as usize][y2 as usize].0.green+rgb_lin.green;
+                linear_map[x2 as usize][y2 as usize].0.blue=linear_map[x2 as usize][y2 as usize].0.blue+rgb_lin.blue;
+                linear_map[x2 as usize][y2 as usize].1=count;
+                let result_rgb=Srgb::from_linear(linear_map[x2 as usize][y2 as usize].0.clone()/count as f32);
+                map.map[x2 as usize][y2 as usize].r = result_rgb.red;
+                map.map[x2 as usize][y2 as usize].g = result_rgb.green;
+                map.map[x2 as usize][y2 as usize].b = result_rgb.blue;
                 inserted += 1;
             }
         }
