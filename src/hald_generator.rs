@@ -230,107 +230,116 @@ impl HaldImageRgbMap {
     ///
     /// La funzione assume che la LUT occupi un'area quadrata di lato `level^3` e
     /// che i tasselli abbiano dimensione `level^2` (come in generate_hald_map_squares).
+    pub fn hald_from_image(&mut self, path: String) -> Result<(), String> {
+        let space_ref: u32 = 5;             // spazio tra tasselli nell'immagine 1:1
+        let n        = self.level.pow(2);   // entry per lato di un tassello (es. 64)
+        let lut_size = self.level.pow(3);   // entry per lato dell'intera LUT (es. 512)
+
+        let img = image::open(path).map_err(|e| format!("Impossibile aprire l'immagine: {}", e))?;
+        let (width, height) = img.dimensions();
+        if width != height {
+            return Err("Hald image must be squared".to_string());
+        }
+        let rgb_img = img.to_rgb8();
+
+        // L'immagine è SOLO l'area LUT senza bordo:
+        //   level tasselli da n px + (level-1) spazi da space_ref px
+        let ref_size     = lut_size + space_ref * (self.level - 1);
+        let scale        = width as f64 / ref_size as f64;
+        let scaled_space = (space_ref as f64 * scale).round() as u32;
+        let scaled_n     = (n as f64 * scale).round() as u32;
+        let pixel_size   = (scaled_n / n).max(1);
+        let sample_size  = ((pixel_size as f32 * 0.95).round() as u32).max(1);
+
+        for lx in 0..lut_size {
+            for ly in 0..lut_size {
+                // img_x = lx * pixel_size + (lx / n) * scaled_space
+                // Ogni volta che lx attraversa un confine di tassello (lx/n aumenta),
+                // si aggiunge scaled_space per saltare lo spazio tra i tasselli.
+                let img_x = lx * pixel_size + (lx / n) * scaled_space;
+                let img_y = ly * pixel_size + (ly / n) * scaled_space;
+
+                let start_x = img_x + (pixel_size - sample_size) / 2;
+                let start_y = img_y + (pixel_size - sample_size) / 2;
+
+                let mut total_linear = LinSrgb::new(0.0f32, 0.0f32, 0.0f32);
+                let mut count = 0u32;
+
+                for i in 0..sample_size {
+                    for j in 0..sample_size {
+                        let px_x = start_x + i;
+                        let px_y = start_y + j;
+                        if px_x < width && px_y < height {
+                            let px        = rgb_img.get_pixel(px_x, px_y);
+                            let linear_px = from_rgb_to_srgb(px).into_linear();
+                            total_linear += linear_px;
+                            count        += 1;
+                        }
+                    }
+                }
+
+                if count > 0 {
+                    let average_linear = total_linear / count as f32;
+                    let average_rgb: Srgb<u8> = Srgb::from_linear(average_linear);
+                    self.map[lx as usize][ly as usize].r = average_rgb.red;
+                    self.map[lx as usize][ly as usize].g = average_rgb.green;
+                    self.map[lx as usize][ly as usize].b = average_rgb.blue;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn save_with_grid(&self, path: String) -> Result<String, String> {
         use std::path::Path;
+
+        let space_ref: u32 = 5;
+        let n        = self.level.pow(2);
+        let lut_size = self.level.pow(3);
 
         let img = image::open(&path).map_err(|e| format!("Impossibile aprire immagine: {}", e))?;
         let (width, height) = img.dimensions();
         if width != height {
-            return Err(format!("Image must be square"));
+            return Err("Image must be square".to_string());
         }
 
-        let cell_count = self.level.pow(3); // numero di celle nella HALD (es. 512)
-        if cell_count == 0 {
-            return Err(format!("Invalid level (cell_count == 0)"));
-        }
-
-        // pixel_per_cell: quanti pixel dell'immagine corrispondono ad una cella della HALD
-        let pixel_per_cell = width / cell_count;
-        let tile_size=width/self.level;
-        if pixel_per_cell == 0 {
-            return Err(format!("Image too small for this hald level: pixel_per_cell == 0"));
-        }
-
-        // Totale pixel occupati dalla LUT (potrebbe essere leggermente più piccolo di width
-        // a causa di divisioni intere). Centriamo quest'area nell'immagine.
-        let total_lut_pixels = pixel_per_cell * cell_count;
-        let offset = 0;
-        println!("offset: {}, tile size: {}", offset, tile_size);
-        let lut_min = offset;
-        let lut_max = offset + total_lut_pixels; // exclusive
+        let ref_size     = lut_size + space_ref * (self.level - 1);
+        let scale        = width as f64 / ref_size as f64;
+        let scaled_space = (space_ref as f64 * scale).round() as u32;
+        let scaled_n     = (n as f64 * scale).round() as u32;
+        let pixel_size   = (scaled_n / n).max(1);
 
         let mut rgb_img = img.to_rgb8();
         let black = Rgb([0u8, 0u8, 0u8]);
-        let line_width: u32 = 1; // larghezza in pixel della griglia
 
-        // Disegniamo linee verticali e orizzontali tra i tasselli
+        // Separatori: tra il tassello (i-1) e il tassello i (i = 1..level)
+        // Lo spazio inizia a: i * n * pixel_size + (i-1) * scaled_space
+        // Il centro dello spazio è a: i * n * pixel_size + (i-1) * scaled_space + scaled_space / 2
         for i in 1..self.level {
-            let x = lut_min + i * tile_size;
-            // vertical line
-            for dx in 0..line_width {
-                let xx = x.saturating_add(dx);
-                if xx >= width { continue; }
-                for y in lut_min..lut_max {
-                    rgb_img.put_pixel(xx, y, black);
+            let gap_center = i * n * pixel_size + (i - 1) * scaled_space + scaled_space / 2;
+
+            // Linea verticale — si estende per tutta l'altezza dell'immagine
+            for y in 0..height {
+                if gap_center < width {
+                    rgb_img.put_pixel(gap_center, y, black);
                 }
             }
-
-            let y = lut_min + i * tile_size;
-            // horizontal line
-            for dy in 0..line_width {
-                let yy = y.saturating_add(dy);
-                if yy >= height { continue; }
-                for x2 in lut_min..lut_max {
-                    rgb_img.put_pixel(x2, yy, black);
+            // Linea orizzontale — si estende per tutta la larghezza dell'immagine
+            for x in 0..width {
+                if gap_center < height {
+                    rgb_img.put_pixel(x, gap_center, black);
                 }
             }
         }
 
-        // Costruiamo il percorso di output aggiungendo _grid prima dell'estensione
-        let p = Path::new(&path);
-        let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "out".to_string());
-        let parent = p.parent().unwrap_or_else(|| Path::new("."));
+        let p        = Path::new(&path);
+        let stem     = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "out".to_string());
+        let parent   = p.parent().unwrap_or_else(|| Path::new("."));
         let out_file = parent.join(format!("{}_grid.png", stem));
-        let out_path_str = out_file.to_string_lossy().into_owned();
+        let out_path = out_file.to_string_lossy().into_owned();
 
         rgb_img.save(&out_file).map_err(|e| format!("Errore nel salvataggio: {}", e))?;
-        Ok(out_path_str)
-    }
-
-    pub fn hald_from_image(& mut self, path: String)->Result<(), String>{
-        let img = image::open(path).expect("Impossibile aprire l'immagine");
-        let (width, height) = img.dimensions();
-        if width != height {
-            return Err(format!("Hald image must be squared"));
-        }
-        // 3. Converti in RGB8 (se non lo è già) per manipolare i pixel facilmente
-        let rgb_img = img.to_rgb8();
-        let size=self.level.pow(3);
-        let pixel_size= width/size;
-        let sample_size=(pixel_size as f32*0.95).round() as u32;
-        let mut start_x=0;
-        let mut start_y=0;
-        for x in 0..size{
-            for y in 0..size{
-                let mut total_linear = LinSrgb::new(0.0, 0.0, 0.0);
-                for i in 0..sample_size{
-                    for j in 0..sample_size{
-                        start_x=pixel_size*x+(pixel_size-sample_size)/2;
-                        start_y=pixel_size*y+(pixel_size-sample_size)/2;
-                        let px =rgb_img.get_pixel(start_x + i, start_y + j);
-                        let srgb_px=from_rgb_to_srgb(px);
-                        let linear_px=srgb_px.into_linear();
-                        total_linear+=linear_px;
-                    }
-                }
-                let average_linear=total_linear/sample_size.pow(2) as f32;
-                let average_rgb:Srgb<u8>=Srgb::from_linear(average_linear);
-                self.map[x as usize][y as usize].r=average_rgb.red;
-                self.map[x as usize][y as usize].b=average_rgb.blue;
-                self.map[x as usize][y as usize].g=average_rgb.green;
-            }
-        }
-        Ok(())
+        Ok(out_path)
     }
     pub fn reverse_map(self)->Self{
         let mut map=HaldImageRgbMap::new(self.level);
@@ -365,6 +374,7 @@ impl HaldImageRgbMap {
         // Soglia in spazio lineare (assoluta per canale). Se il pixel misurato
         // differisce dalla HALD standard più di questa soglia in uno qualsiasi
         // dei canali, non lo inseriamo nella mappa di output.
+        //todo usare oklab per filtrare
         const REVERSE_THRESHOLD: f32 = 1.0;
         // Soglie addizionali nello spazio sRGB (componenti 0..1) - controllo per canale
         const SRGB_THRESH_R: f32 = 0.27;
