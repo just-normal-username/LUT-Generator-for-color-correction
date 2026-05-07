@@ -18,6 +18,39 @@ impl From<Pixel> for Rgb<u8> {
 fn from_rgb_to_srgb(px:&Rgb<u8>) -> Srgb {
     Srgb::new(px[0] as f32/255.0, px[1] as f32/255.0, px[2] as f32/255.0)
 }
+
+macro_rules! check_lut_bounds {
+    ($x:expr, $y:expr, $lut_min:expr, $lut_max:expr, $n:expr, $space:expr) => {
+        $x >= $lut_min && $x <= $lut_max &&
+        $y >= $lut_min && $y <= $lut_max &&
+        (($x - $lut_min) % ($n + $space) < $n) &&
+        (($y - $lut_min) % ($n + $space) < $n)
+    };
+}
+macro_rules! get_lut_x {
+    ($x:expr, $border:expr, $lut_min:expr, $n:expr, $space:expr) => {
+        $x - $border - ($x - $lut_min) / ($n + $space) * $space
+    };
+}
+
+macro_rules! get_lut_y {
+    ($y:expr, $border:expr, $lut_min:expr, $n:expr, $space:expr) => {
+        $y - $border - ($y - $lut_min) / ($n + $space) * $space
+    };
+}
+
+macro_rules! try_fill_pixel {
+    ($img:expr, $map:expr, $x:expr, $y:expr, $nx:expr, $ny:expr, $border:expr, $lut_min:expr, $lut_max:expr, $n:expr, $space:expr) => {
+        if check_lut_bounds!($nx, $ny, $lut_min, $lut_max, $n, $space) {
+            let lx = get_lut_x!($nx, $border, $lut_min, $n, $space) as usize;
+            let ly = get_lut_y!($ny, $border, $lut_min, $n, $space) as usize;
+            $img.put_pixel($x, $y, $map[lx][ly].clone().into());
+            true // Indica che abbiamo trovato e scritto un pixel
+        } else {
+            false
+        }
+    };
+}
 #[derive(Debug)]
 pub struct HaldImageRgbMap {
     level:u32,
@@ -97,7 +130,9 @@ impl HaldImageRgbMap {
     pub fn generate_HALD(&mut self) {
         let lut_size = self.level.pow(3);
         let border = 10;
-        let final_size = lut_size + (border * 2);
+        let space = 5;
+        let final_size = lut_size + (border * 2) + space*(self.level -1);
+        let n =self.level.pow(2);
 
         let mut img = RgbImage::new(final_size, final_size);
 
@@ -108,42 +143,78 @@ impl HaldImageRgbMap {
             for x in 0..final_size {
                 // Definiamo i confini esatti della LUT
                 let lut_min = border;
-                let lut_max = border + lut_size - 1;
+                let lut_max = border + lut_size - 1 + space*(self.level - 1);
 
                 // Logica per l'area della LUT (centrale)
-                let is_inside_lut = x >= lut_min && x < (lut_min + lut_size) &&
-                    y >= lut_min && y < (lut_min + lut_size);
+                let is_inside_lut = check_lut_bounds!(x,y,lut_min,lut_max,n,space);
 
                 if is_inside_lut {
-                    let lut_x = x - border;
-                    let lut_y = y - border;
+                    let lut_x = x - border-(x-lut_min)/(n+space)*space;
+                    let lut_y = y - border-(y-lut_min)/(n+space)*space;
                     img.put_pixel(x, y, self.map[lut_x as usize][lut_y as usize].clone().into());
                 } else {
-                    let mut is_marker = false;
+                    if x >= lut_min && x <= lut_max &&y >= lut_min && y <= lut_max && !(((x-lut_min)%(n+space)<n) && ((y-lut_min)%(n+space)<n)){
+                        // Prova distanza 1
+                        if      try_fill_pixel!(img, self.map, x, y, x-1, y,   border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x,   y-1, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x-1, y-1, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x+1, y,   border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x,   y+1, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x+1, y+1, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x+1, y-1, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x-1, y+1, border, lut_min, lut_max, n, space) {}
 
-                    // --- LOGICA CROCINI A CONTATTO (Specchiati verso l'interno) ---
+                        // Prova distanza 2 (Espansione richiesta)
+                        else if try_fill_pixel!(img, self.map, x, y, x-2, y,   border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x,   y-2, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x-2, y-2, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x+2, y,   border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x,   y+2, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x+2, y+2, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x+2, y-2, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x-2, y+2, border, lut_min, lut_max, n, space) {}
 
-                    // Angolo Alto-Sinistra: la punta della L è in (lut_min, lut_min)
-                    if (x == lut_min && y < lut_min) || (y == lut_min && x < lut_min) {
-                        is_marker = true;
-                    }
-                    // Angolo Alto-Destra: la punta della L è in (lut_max, lut_min)
-                    else if (x == lut_max && y < lut_min) || (y == lut_min && x > lut_max) {
-                        is_marker = true;
-                    }
-                    // Angolo Basso-Sinistra: la punta della L è in (lut_min, lut_max)
-                    else if (x == lut_min && y > lut_max) || (y == lut_max && x < lut_min) {
-                        is_marker = true;
-                    }
-                    // Angolo Basso-Destra: la punta della L è in (lut_max, lut_max)
-                    else if (x == lut_max && y > lut_max) || (y == lut_max && x > lut_max) {
-                        is_marker = true;
-                    }
+                        // Casi misti distanza 2 (es: 2 in x, 1 in y) per coprire meglio i buchi diagonali
+                        else if try_fill_pixel!(img, self.map, x, y, x-2, y-1, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x-2, y+1, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x+2, y-1, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x+2, y+1, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x-1, y-2, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x+1, y-2, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x-1, y+2, border, lut_min, lut_max, n, space) {}
+                        else if try_fill_pixel!(img, self.map, x, y, x+1, y+2, border, lut_min, lut_max, n, space) {}
 
-                    if is_marker {
-                        img.put_pixel(x, y, marker_color);
-                    } else {
-                        img.put_pixel(x, y, background_color);
+                        else {
+                            img.put_pixel(x, y, Rgb([255, 255, 255]));
+                        }
+                    }
+                    else {
+                        let mut is_marker = false;
+
+                        // --- LOGICA CROCINI A CONTATTO (Specchiati verso l'interno) ---
+
+                        // Angolo Alto-Sinistra: la punta della L è in (lut_min, lut_min)
+                        if (x == lut_min && y < lut_min) || (y == lut_min && x < lut_min) {
+                            is_marker = true;
+                        }
+                        // Angolo Alto-Destra: la punta della L è in (lut_max, lut_min)
+                        else if (x == lut_max && y < lut_min) || (y == lut_min && x > lut_max) {
+                            is_marker = true;
+                        }
+                        // Angolo Basso-Sinistra: la punta della L è in (lut_min, lut_max)
+                        else if (x == lut_min && y > lut_max) || (y == lut_max && x < lut_min) {
+                            is_marker = true;
+                        }
+                        // Angolo Basso-Destra: la punta della L è in (lut_max, lut_max)
+                        else if (x == lut_max && y > lut_max) || (y == lut_max && x > lut_max) {
+                            is_marker = true;
+                        }
+
+                        if is_marker {
+                            img.put_pixel(x, y, marker_color);
+                        } else {
+                            img.put_pixel(x, y, background_color);
+                        }
                     }
                 }
             }
