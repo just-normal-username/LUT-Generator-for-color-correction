@@ -1,6 +1,6 @@
 use std::ops::Add;
 use image::{GenericImageView, ImageBuffer, Rgb, RgbImage};
-use palette::{Srgb, LinSrgb};
+use palette::{FromColor, Oklab,Srgb, LinSrgb};
 use palette::encoding::{Linear};
 
 #[derive(Clone)]
@@ -377,9 +377,11 @@ impl HaldImageRgbMap {
         //todo usare oklab per filtrare
         const REVERSE_THRESHOLD: f32 = 1.0;
         // Soglie addizionali nello spazio sRGB (componenti 0..1) - controllo per canale
-        const SRGB_THRESH_R: f32 = 0.27;
-        const SRGB_THRESH_G: f32 = 0.27;
-        const SRGB_THRESH_B: f32 = 0.27;
+        // const SRGB_THRESH_R: f32 = 0.27;
+        // const SRGB_THRESH_G: f32 = 0.27;
+        // const SRGB_THRESH_B: f32 = 0.27;
+
+        const OKLAB_TRESH: f32 = 0.17;
         let mut inserted = 0usize;
         let mut skipped = 0usize;
 
@@ -409,10 +411,13 @@ impl HaldImageRgbMap {
                 // Controllo addizionale nello spazio sRGB (assoluto per canale)
                 let px_srgb = from_rgb_to_srgb(&px_rgb);
                 let exp_srgb = from_rgb_to_srgb(&exp_rgb);
-                let sdr = (px_srgb.red - exp_srgb.red).abs();
-                let sdg = (px_srgb.green - exp_srgb.green).abs();
-                let sdb = (px_srgb.blue - exp_srgb.blue).abs();
-                if sdr > SRGB_THRESH_R || sdg > SRGB_THRESH_G || sdb > SRGB_THRESH_B {
+
+                let exp_oklab= Oklab::from_color(exp_srgb);
+                let px_oklab= Oklab::from_color(px_srgb);
+                let sdl_ins = (px_oklab.l - exp_oklab.l).abs();
+                let sda_ins = (px_oklab.a - exp_oklab.a).abs();
+                let sdb_ins = (px_oklab.b - exp_oklab.b).abs();
+                if (sdl_ins.powf(2.0) + sda_ins.powf(2.0) + sdb_ins.powf(2.0)).sqrt()> OKLAB_TRESH{
                     skipped += 1;
                     continue;
                 }
@@ -433,14 +438,14 @@ impl HaldImageRgbMap {
                     continue;
                 }
 
-                // ulteriore controllo sRGB per il confronto round-trip
-                let canonical_srgb = from_rgb_to_srgb(&canonical_dest_rgb);
-                if (px_srgb.red - canonical_srgb.red).abs() > SRGB_THRESH_R ||
-                   (px_srgb.green - canonical_srgb.green).abs() > SRGB_THRESH_G ||
-                   (px_srgb.blue - canonical_srgb.blue).abs() > SRGB_THRESH_B {
-                    skipped += 1;
-                    continue;
-                }
+                // // ulteriore controllo sRGB per il confronto round-trip
+                // let canonical_srgb = from_rgb_to_srgb(&canonical_dest_rgb);
+                // if (px_srgb.red - canonical_srgb.red).abs() > SRGB_THRESH_R ||
+                //    (px_srgb.green - canonical_srgb.green).abs() > SRGB_THRESH_G ||
+                //    (px_srgb.blue - canonical_srgb.blue).abs() > SRGB_THRESH_B {
+                //     skipped += 1;
+                //     continue;
+                // }
 
                 let rgb = rgb_from_xy_squares(x, y, self.level);
 
@@ -465,13 +470,16 @@ impl HaldImageRgbMap {
                 // Controllo addizionale nello spazio sRGB per il valore che stiamo per inserire
                 let rgb_srgb = from_rgb_to_srgb(&rgb);
                 let dest_expected_srgb = from_rgb_to_srgb(&dest_expected_rgb);
-                let sdr_ins = (rgb_srgb.red - dest_expected_srgb.red).abs();
-                let sdg_ins = (rgb_srgb.green - dest_expected_srgb.green).abs();
-                let sdb_ins = (rgb_srgb.blue - dest_expected_srgb.blue).abs();
-                if sdr_ins > SRGB_THRESH_R || sdg_ins > SRGB_THRESH_G || sdb_ins > SRGB_THRESH_B {
+                let dest_expected_oklab= Oklab::from_color(dest_expected_srgb);
+                let rgb_oklab= Oklab::from_color(rgb_srgb);
+                let sdl_ins = (rgb_oklab.l - dest_expected_oklab.l).abs();
+                let sda_ins = (rgb_oklab.a - dest_expected_oklab.a).abs();
+                let sdb_ins = (rgb_oklab.b - dest_expected_oklab.b).abs();
+                if (sdl_ins.powf(2.0) + sda_ins.powf(2.0) + sdb_ins.powf(2.0)).sqrt()> OKLAB_TRESH{
                     skipped += 1;
                     continue;
                 }
+
                 let mut count=linear_map[x2 as usize][y2 as usize].1;
                 count+=1;
                 linear_map[x2 as usize][y2 as usize].0.red=linear_map[x2 as usize][y2 as usize].0.red+rgb_lin.red;
